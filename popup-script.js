@@ -1,9 +1,8 @@
 const renderSliderGivenElem = (slider, data) => {
   // Sort keys according to their significance
   for(let attr of Object.keys(data)) {
-    console.log("attr", attr);
-    slider.querySelector(`.${attr}`)
-    if(data[attr] < 0.05) {
+    slider.querySelector(`.${attr}`).setAttribute("style", `width:${data[attr]*100}%`);
+    if(data[attr] < 0.10) {
       // If the emotion isn't large enough, don't show text
       slider.querySelector(`.${attr}`).innerHTML = "";
     }
@@ -39,25 +38,27 @@ const renderSliders = (data) => {
   // Send a message to the tab we're currently on (where the content-script is running)
   const [tab] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
   webElem.innerHTML = (new URL(tab.url)).hostname.replace("www.", "");
-  const {data, website} = await chrome.tabs.sendMessage(tab.id, {render: true});
+  const {data} = await chrome.tabs.sendMessage(tab.id, {render: true});
   
   // Once we get the response, render it!
   renderSliders(data);
 
   // Fill "content is mostly ..."
+  console.log("Data: ", data);
   const negPos = data.sentiment_score;
   const intensity = document.querySelector(".intensity");
   const negPosElem = document.querySelector(".content");
-  if(Math.abs(negPos) < 0.2) {
+  if(Math.abs(negPos) < 0.9) {
     intensity.innerHTML = "";
   }
-  else if(Math.abs(negPos) < 0.5) {
+  else if(Math.abs(negPos) < 0.9) {
     intensity.innerHTML = "moderately";
   }
   else {
     intensity.innerHTML = "mostly";
   }
-  negPosElem.innerHTML = Math.abs(negPos) < 0.2 ? "NEUTRAL" : 
-    negPos < -0.2 ? "NEGATIVE" : "POSITIVE";
+  console.log("Intensity: ", negPos);
+  negPosElem.innerHTML = Math.abs(negPos) < 0.9 ? "NEUTRAL" : 
+    negPos < -0.9 ? "NEGATIVE" : "POSITIVE";
   loading.setAttribute("style", "display: none;");
 })();
