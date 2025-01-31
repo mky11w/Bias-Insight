@@ -4,10 +4,17 @@
     "version": "1.0",
     "manifest_version": 3,
     "action": {
-      "default_popup": "hello.html",
-      "default_icon": "bias.png"
+      "default_popup": "main.html",
+      "default_icon": "assets/parakeet.png"
     },
-
+    "background": {
+      "service_worker": "service_worker.js",
+      "type": "module"
+    },
+    "permissions": [
+      "storage",
+      "tabs"
+    ],
     "content_scripts": [
       {
           "matches": [

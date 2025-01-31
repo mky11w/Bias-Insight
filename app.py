@@ -4,8 +4,16 @@ from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import Union, List
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"], 
+    allow_headers=["*"],
+)
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -86,12 +94,10 @@ async def analyze_text(input_data: TextInput, accumulated: bool = Query(False)):
 
 
         response = {
-            "batch_result": {
-                "batch_sentiment_score": round(batch_sentiment_score, 4),
-                "batch_dominating_emotions": batch_emotions,
-                "batch_political_bias": batch_political_bias,
-                "batch_stereotype_analysis": batch_stereotypes
-            }
+            "sentiment_score": round(batch_sentiment_score, 4),
+            "dominating_emotions": batch_emotions,
+            "political_bias": batch_political_bias,
+            "stereotype_analysis": batch_stereotypes
         }
 
         if accumulated:

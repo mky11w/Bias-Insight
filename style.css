@@ -1,0 +1,187 @@
+@import url('https://fonts.googleapis.com/css2?family=Atma:wght@300;400;500;600;700&display=swap');
+
+body {
+    font-family: "Atma", serif;
+    font-size: 18px;
+    padding-bottom: 2em;
+    --color-1: #88498F;
+    --color-2: #779FA1;
+    --color-3: #E0CBA8;
+    --color-4: #FF6542;
+    --color-5: #564154;
+    background: #eee8de;
+
+    /* Emotions: */
+    --angry: #f36c66;
+    --disgust: #b1d6a2;
+    --fear: #f6c2a2;
+    --joy: #bb8dc3;
+    --sad: #74a5c2;
+    --neutral: #9f9f9f;
+    --surprise: #f8fab2;
+
+    /* Politics: */
+    --right: hsl(357, 65%, 70%);
+    --center: hsl(0, 0%, 70%);
+    --left: hsl(225, 53%, 80%);
+
+    --women: #d187f2;
+    --gender: #fef8cb;
+    --profession: #8da9b6;
+    --race: #8ed8ff;
+    --unrelated: #9f9f9f;
+    --religion: #bee0b0;
+}
+
+.bias-insight-title {
+    position: relative;
+    display: flex;
+    flex-direction: row;
+    gap: 5px;
+    justify-content: baseline;
+    align-items: center;
+    min-width: 20em;
+}
+
+.bias-insight-title img {
+    width: 2em;
+    height: 2em;
+}
+
+.website {
+    border-bottom: 1.2px solid var(--color-1);
+}
+
+.insights {
+    position: relative;
+    width: 100%;
+}
+
+.insights .content {
+    font-weight: 900;
+    font-size: 30px;
+}
+
+.big-insight {
+    text-align: center;
+}
+
+.footer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    width: 100%;
+    justify-content: space-between;
+    color: white;
+    background: rgba(0, 0, 0, 0.8);
+    display: flex;
+    align-items: center;
+    flex-direction: row;
+    padding: 0 5px;
+    font-size: 12px;
+    box-sizing: border-box;
+}
+
+.parakeet-cloud {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.footer img {
+    width: 1.2em;
+    height: 1.2em;
+    object-fit: contain;
+}
+
+.slider {
+    position: relative;
+    width: 100%;
+    display: flex;
+    flex-direction: row;
+    text-align: center;
+    border: 1.2px solid grey;
+}
+.slider > * {
+    overflow: hidden;
+}
+
+.emotion-slider .anger {
+    background: var(--angry);
+}
+.emotion-slider .disgust {
+    background: var(--disgust);
+}
+.emotion-slider .fear {
+    background: var(--fear);
+}
+.emotion-slider .joy {
+    background: var(--joy);
+}
+.emotion-slider .sadness {
+    background: var(--sad);
+}
+.emotion-slider .neutral {
+    background: var(--neutral);
+}
+.emotion-slider .surprise {
+    background: var(--surprise);
+}
+
+.politics-slider .left {
+    background: var(--left);
+}
+.politics-slider .right {
+    background: var(--right);
+}
+.politics-slider .center {
+    background: var(--center);
+}
+
+.stereotype-slider .unrelated {
+    background: var(--unrelated);
+}
+.stereotype-slider .stereotype_women {
+    background: var(--women);
+}
+.stereotype-slider .stereotype_gender {
+    background: var(--gender);
+}
+.stereotype-slider .stereotype_profession {
+    background: var(--profession);
+}
+.stereotype-slider .stereotype_race {
+    background: var(--race);
+}
+.stereotype-slider .stereotype_religion {
+    background: var(--religion);
+}
+
+.loading {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    background: #eee8de;
+    z-index: 3;
+}
+
+.loading svg {
+    width: 4em;
+    height: 4em;
+    display: inline-block;
+    animation-name: circle;
+    animation-duration: 1s;
+    animation-iteration-count: infinite;
+}
+
+@keyframes circle {
+    0% {
+        transform: rotateZ(-360deg);
+    }
+}
