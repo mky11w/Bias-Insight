@@ -1,26 +1,48 @@
-import json
+import os
+from fastapi import FastAPI, HTTPException, Depends
+from sqlalchemy import create_engine, Column, Integer, Float, String, JSON, func
+from sqlalchemy.orm import declarative_base, sessionmaker, Session
+from pydantic import BaseModel
+from typing import List, Dict
 import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
-from fastapi import FastAPI, HTTPException, Query
-from pydantic import BaseModel
-from typing import Union, List
+from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 
+
+load_dotenv()
+
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL is not set in environment variables.")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=True,
-    allow_methods=["*"], 
+    allow_methods=["*"],
     allow_headers=["*"],
 )
 
+
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def load_model(model_name):
-    model = AutoModelForSequenceClassification.from_pretrained(model_name).to(device).eval()
-    tokenizer = AutoTokenizer.from_pretrained(model_name)
-    return model, tokenizer
+    try:
+        model = AutoModelForSequenceClassification.from_pretrained(model_name).to(device)
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        return model, tokenizer
+    except Exception as e:
+        raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
 
 
 sentiment_model, sentiment_tokenizer = load_model("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
@@ -34,90 +56,168 @@ stereo_labels = ["unrelated", "stereotype_gender", "stereotype_race", "stereotyp
 political_labels = ["left", "center", "right"]
 
 
-accumulated_scores = {
-    "sentiment": [],
-    "emotions": {label: [] for label in emotion_labels},
-    "political_bias": {label: [] for label in political_labels},
-    "stereotype": {label: [] for label in stereo_labels},
-    "batch_count": 0
-}
+class AnalysisSession(Base):
+    __tablename__ = "analysis_sessions"
+    id = Column(Integer, primary_key=True, index=True)
+    website = Column(String, index=True)
+    entry_time = Column(Float)
+    exit_time = Column(Float, nullable=True)
+    viewing_time = Column(Float, default=0.0)
+    sentiment_score = Column(Float)
+    emotions = Column(JSON)
+    political_bias = Column(JSON)
+    stereotype_score = Column(JSON)  
+
+Base.metadata.create_all(bind=engine)
+
 
 class TextInput(BaseModel):
-    texts: Union[str, List[str]]
+    texts: List[str]
+    website: str
+    entry_time: float
+
+class TimeUpdate(BaseModel):
+    website: str
+    exit_time: float
+
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
 
 async def classify_texts(model, tokenizer, texts):
-    if isinstance(texts, str):
-        texts = [texts]
-    
-    inputs = tokenizer(texts, padding=True, truncation=True, return_tensors="pt").to(device)
-    
+    inputs = tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = model(**inputs)
-    scores = torch.nn.functional.softmax(outputs.logits, dim=-1)
-    
-    return scores
+    return torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy().tolist()  # Convert tensors to lists
+
 
 @app.post("/SMBSanalyze")
-async def analyze_text(input_data: TextInput, accumulated: bool = Query(False)):
-    global accumulated_scores
-    
-    try:
-        texts = input_data.texts
-        if not texts or (isinstance(texts, list) and all(not t.strip() for t in texts)):
-            raise HTTPException(status_code=400, detail="Input text cannot be empty.")
+async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
+    texts = input_data.texts
+    if not texts or all(not text.strip() for text in texts):
+        raise HTTPException(status_code=400, detail="Input texts cannot be empty.")
 
 
-        sentiment_scores = await classify_texts(sentiment_model, sentiment_tokenizer, texts)
-        batch_sentiment_score = (sentiment_scores[:, 1] - sentiment_scores[:, 0]).mean().item()
-        accumulated_scores["sentiment"].append(batch_sentiment_score)
+    sentiment_scores = await classify_texts(sentiment_model, sentiment_tokenizer, texts)
+    batch_sentiment_score = round(sum(score[1] - score[0] for score in sentiment_scores) / len(sentiment_scores), 4)
 
 
-        emotion_scores = await classify_texts(emotion_model, emotion_tokenizer, texts)
-        batch_emotions = {label: round(emotion_scores[:, i].mean().item(), 4) for i, label in enumerate(emotion_labels)}
-        for label, score in batch_emotions.items():
-            accumulated_scores["emotions"][label].append(score)
+    emotion_scores = await classify_texts(emotion_model, emotion_tokenizer, texts)
+    batch_emotions = {label: round(sum(em[i] for em in emotion_scores) / len(emotion_scores), 4) for i, label in enumerate(emotion_labels)}
+
+    political_scores = await classify_texts(political_model, political_tokenizer, texts)
+    batch_political_bias = {label: round(sum(pol[i] for pol in political_scores) / len(political_scores), 4) for i, label in enumerate(political_labels)}
 
 
-        political_scores = await classify_texts(political_model, political_tokenizer, texts)
-        batch_political_bias = {label: round(political_scores[:, i].mean().item(), 4) for i, label in enumerate(political_labels)}
-        for label, score in batch_political_bias.items():
-            accumulated_scores["political_bias"][label].append(score)
+    stereotype_scores = await classify_texts(stereo_model, stereo_tokenizer, texts)
+    batch_stereotypes = {label: round(sum(st[i] for st in stereotype_scores) / len(stereotype_scores), 4) for i, label in enumerate(stereo_labels)}
 
 
-        stereotype_scores = await classify_texts(stereo_model, stereo_tokenizer, texts)
-        batch_stereotypes = {label: round(stereotype_scores[:, i].mean().item(), 4) for i, label in enumerate(stereo_labels)}
-        for label, score in batch_stereotypes.items():
-            accumulated_scores["stereotype"][label].append(score)
+    response = {
+        "sentiment_score": batch_sentiment_score,
+        "dominating_emotions": batch_emotions,
+        "political_bias": batch_political_bias,
+        "stereotype_analysis": batch_stereotypes
+    }
+
+    session = AnalysisSession(
+        website=input_data.website,
+        entry_time=input_data.entry_time,
+        sentiment_score=batch_sentiment_score,  
+        emotions=batch_emotions if batch_emotions else {}, 
+        political_bias=batch_political_bias if batch_political_bias else {}, 
+        stereotype_score=batch_stereotypes if batch_stereotypes else {}  
+    )
+    db.add(session)
+    db.commit()
+
+    return response
+
+@app.patch("/update_viewing_time")
+async def update_viewing_time(time_data: TimeUpdate, db: Session = Depends(get_db)):
+    session = db.query(AnalysisSession).filter(
+        AnalysisSession.website == time_data.website
+    ).order_by(AnalysisSession.entry_time.desc()).first()  # Get latest session for the website
+
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    if time_data.exit_time <= session.entry_time:
+        raise HTTPException(status_code=400, detail="Exit time must be greater than entry time.")
+
+    session.exit_time = time_data.exit_time
+    session.viewing_time = round(session.exit_time - session.entry_time, 4)  # Ensure correct viewing time
+    db.commit()
+
+    return {"message": "Viewing time updated successfully"}
+
+@app.get("/website_stats")
+async def get_website_stats(db: Session = Depends(get_db)):
+    stats = db.query(
+        AnalysisSession.website,
+        func.sum(AnalysisSession.viewing_time).label("total_time")
+    ).group_by(AnalysisSession.website).all()
+
+    if not stats:
+        raise HTTPException(status_code=404, detail="No website statistics found")
+
+    return [{"website": s[0], "total_viewing_time": round(s[1], 4)} for s in stats]
 
 
-        accumulated_scores["batch_count"] += 1
+@app.get("/overall_results")
+async def get_overall_accumulated_results(website: str = None, db: Session = Depends(get_db)):
+    query = db.query(AnalysisSession).filter(AnalysisSession.viewing_time > 0)
+    if website:
+        query = query.filter(AnalysisSession.website == website)  # Filter by website if provided
+
+    sessions = query.all()
+
+    if not sessions:
+        raise HTTPException(status_code=404, detail="No data found")
+
+    total_time = sum(s.viewing_time for s in sessions)
+    if total_time == 0:
+        return {"message": "Total viewing time is zero, no meaningful scores available."}
+
+    weighted_scores = {
+        "sentiment": 0,
+        "emotions": {},
+        "political_bias": {},
+        "stereotype": {}  
+    }
+
+    for session in sessions:
+        weight = session.viewing_time / total_time
+        weighted_scores["sentiment"] += session.sentiment_score * weight
+
+        for category, target_key in [("emotions", "emotions"), ("political_bias", "political_bias"), ("stereotype_score", "stereotype")]:
+            session_data = getattr(session, category)
+            if not session_data:
+                continue
+
+            for key, score in session_data.items():
+                if key not in weighted_scores[target_key]:
+                    weighted_scores[target_key][key] = 0
+                weighted_scores[target_key][key] += score * weight
 
 
-        response = {
-            "sentiment_score": round(batch_sentiment_score, 4),
-            "dominating_emotions": batch_emotions,
-            "political_bias": batch_political_bias,
-            "stereotype_analysis": batch_stereotypes
-        }
+    weighted_scores["sentiment"] = round(weighted_scores["sentiment"], 4)
+    weighted_scores["emotions"] = {k: round(v, 4) for k, v in weighted_scores["emotions"].items()}
+    weighted_scores["political_bias"] = {k: round(v, 4) for k, v in weighted_scores["political_bias"].items()}
+    weighted_scores["stereotype"] = {k: round(v, 4) for k, v in weighted_scores["stereotype"].items()}  # ✅ Fixed access to correct key
 
-        if accumulated:
-            avg_sentiment_score = round(sum(accumulated_scores["sentiment"]) / accumulated_scores["batch_count"], 4)
-            avg_emotions = {label: round(sum(scores) / accumulated_scores["batch_count"], 4) for label, scores in accumulated_scores["emotions"].items()}
-            avg_political_bias = {label: round(sum(scores) / accumulated_scores["batch_count"], 4) for label, scores in accumulated_scores["political_bias"].items()}
-            avg_stereotypes = {label: round(sum(scores) / accumulated_scores["batch_count"], 4) for label, scores in accumulated_scores["stereotype"].items()}
-            
-            response["accumulated_result"] = {
-                "overall_sentiment_score": avg_sentiment_score,
-                "dominating_emotions": avg_emotions,
-                "political_bias": avg_political_bias,
-                "stereotype_analysis": avg_stereotypes
-            }
+    return {
+        "website": website if website else "All websites",
+        "total_viewing_time": round(total_time, 4),
+        "weighted_scores": weighted_scores
+    }
 
-        return response
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Server error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
