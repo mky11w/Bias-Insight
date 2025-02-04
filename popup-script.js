@@ -36,7 +36,9 @@ const renderSliders = (data) => {
   // Show the website being read
   const webElem = document.querySelector(".website");
   // Send a message to the tab we're currently on (where the content-script is running)
-  const [tab] = await chrome.tabs.query({active: true, lastFocusedWindow: true});
+  const [tab] = await chrome.tabs.query({
+    active: true, lastFocusedWindow: true
+  });
   webElem.innerHTML = (new URL(tab.url)).hostname.replace("www.", "");
   const {data} = await chrome.tabs.sendMessage(tab.id, {render: true});
   
@@ -44,8 +46,21 @@ const renderSliders = (data) => {
   renderSliders(data);
 
   // Fill "content is mostly ..."
-  console.log("Data: ", data);
-  const negPos = data.sentiment_score;
+  const {anger, disgust, fear, joy, sadness, neutral, surprise} = data.dominating_emotions;
+  // Add up all of the good things
+  const goodNews = surprise + joy;
+  const badNews = anger + disgust + fear + sadness;
+  // If bad
+  const negPosElem = document.querySelector(".content");
+  if(badNews > 0.3 && goodNews < 0.3) {
+    negPosElem.innerHTML = "NEGATIVE";
+  } else if(goodNews > 0.3 && badNews < 0.3) {
+    negPosElem.innerHTML = "POSITIVE";
+  } else {
+    negPosElem.innerHTML = "NEUTRAL";
+  }
+
+  /*const negPos = data.sentiment_score;
   const intensity = document.querySelector(".intensity");
   const negPosElem = document.querySelector(".content");
   if(Math.abs(negPos) < 0.9) {
@@ -59,6 +74,6 @@ const renderSliders = (data) => {
   }
   console.log("Intensity: ", negPos);
   negPosElem.innerHTML = Math.abs(negPos) < 0.9 ? "NEUTRAL" : 
-    negPos < -0.9 ? "NEGATIVE" : "POSITIVE";
+    negPos < -0.9 ? "NEGATIVE" : "POSITIVE";*/
   loading.setAttribute("style", "display: none;");
 })();
