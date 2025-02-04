@@ -156,6 +156,19 @@ async def update_viewing_time(time_data: TimeUpdate, db: Session = Depends(get_d
 
     return {"message": "Viewing time updated successfully"}
 
+@app.get("/website_stats")
+async def get_website_stats(db: Session = Depends(get_db)):
+    stats = db.query(
+        AnalysisSession.website,
+        func.sum(AnalysisSession.viewing_time).label("total_time")
+    ).group_by(AnalysisSession.website).all()
+
+    if not stats:
+        raise HTTPException(status_code=404, detail="No website statistics found")
+
+    return [{"website": s[0], "total_viewing_time": round(s[1], 4)} for s in stats]
+
+
 @app.get("/overall_results")
 async def get_overall_accumulated_results(website: str = None, db: Session = Depends(get_db)):
     query = db.query(AnalysisSession).filter(AnalysisSession.viewing_time > 0)
