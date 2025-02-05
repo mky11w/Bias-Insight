@@ -1,0 +1,125 @@
+@import url('https://fonts.googleapis.com/css2?family=Atma:wght@300;400;500;600;700&display=swap');
+
+.title {
+    font-size: 45px;
+    font-weight: 900;
+}
+
+body {
+    font-family: "Atma", serif;
+    font-size: 18px;
+    padding-bottom: 2em;
+    --color-1: #88498F;
+    --color-2: #779FA1;
+    --color-3: #E0CBA8;
+    --color-4: #FF6542;
+    --color-5: #564154;
+    --background: #eee8de;
+    background: var(--background);
+
+    /* Emotions: */
+    --angry: #f36c66;
+    --disgust: #b1d6a2;
+    --fear: #f6c2a2;
+    --joy: #bb8dc3;
+    --sad: #74a5c2;
+    --neutral: #9f9f9f;
+    --surprise: #f8fab2;
+
+    /* Politics: */
+    --right: hsl(357, 65%, 70%);
+    --center: hsl(0, 0%, 70%);
+    --left: hsl(225, 53%, 80%);
+
+    --women: #d187f2;
+    --gender: #fef8cb;
+    --profession: #8da9b6;
+    --race: #8ed8ff;
+    --unrelated: #9f9f9f;
+    --religion: #bee0b0;
+}
+
+.loading-page {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    opacity: 1;
+    animation: fade-in 1s 1 ease-in-out;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    z-index: 2;
+    background: var(--background);
+}
+
+@keyframes fade-in {
+    0% {
+        opacity: 0;
+    }
+}
+
+.pulsing-parakeet {
+    width: clamp(200px, 90%, 50%);
+    height: clamp(200px, 90%, 50%);
+    object-fit: contain;
+    animation: fade 1s ease-in-out infinite;
+}
+
+@keyframes fade {
+    50% {
+        transform: scale(1.05);
+    }
+}
+
+.header {
+    position: relative;
+    top: 0;
+    left: 0;
+    width: 100%;
+    font-size: 2em;
+    font-weight: 600;
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 10px;
+}
+
+.header img {
+    height: 1.5em;
+}
+
+.stacked-charts {
+    display: flex;
+    min-height: 200px;
+}
+
+.stacked-charts .big-chart {
+    flex-grow: 1;
+}
+
+.subtitle {
+    font-size: 23px;
+    display: flex;
+    align-items: center;
+}
+
+#different_options {
+    margin-left: auto;
+    margin-right: 15px;
+}
+
+.top-words {
+    display: flex;
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.word {
+    border: 1.2px solid rgba(0, 0, 0, 0.7);
+    padding: 5px;
+    width: 10em;
+}

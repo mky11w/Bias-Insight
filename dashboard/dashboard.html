@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <link rel="stylesheet" href="./dashboard.css" />
+    </head>
+    <body>
+        <div class="loading-page" style="display: none;">
+            <img src="./parakeet.png" class="pulsing-parakeet"/>
+            <div class="title">Bias Insight</div>
+            <i>Dashboard loading...</i>
+        </div>
+
+        <div class="bias-dashboard">
+            <div class="header">
+                <img src="./parakeet.png" class="parakeet"/>
+                Your Bias Dashboard
+            </div>
+            <i>This may not be accurate. Learn more <a href="#">here</a>.</i>
+
+            <div class="stacked-charts">
+                <!-- Left big chart: -->
+                <div class="big-chart">
+                    <div class="subtitle">
+                        Past 24 Hours
+                        <select id="different_options">
+                            <option value="emotions">Emotions</option>
+                            <option value="stereotype">Stereotype</option>
+                        </select>
+                    </div>
+                    <canvas id="big-chart"></canvas>
+                </div>
+
+                <!-- Right smaller charts (status + negativity monitor) -->
+                <div class="neg-status">
+                    <div class="negativity-monitor">
+                        Negativity Monitor
+                    </div>
+                    <div class="today-status">
+                        <canvas id="today-chart"></canvas>
+                    </div>
+                </div>
+            </div>
+
+            <div class="subtitle">Top Words</div>
+            <div class="top-words">
+                
+            </div>
+        </div>
+        <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+        <script src="dashboard.js"></script>
+    </body>
+</html>

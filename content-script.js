@@ -1,3 +1,9 @@
+// When we first load the page
+// The time we loaded the page in (we update this when page loads)
+let startTime = (new Date()).getTime();
+// The location we're at
+const loc = window.location.hostname;
+
 const getContent = () => {
     return new Promise((res, rej) => {
         // Query for all the content within the page
@@ -6,6 +12,8 @@ const getContent = () => {
             return len > 3;
         }).join("\n");
 
+        // Update timestamp right before we request an analysis
+        startTime = (new Date()).getTime();
         // Once we get content, send it off to Makayla's app
         fetch("http://localhost:8000/SMBSanalyze", {
             method: "POST",
@@ -13,10 +21,11 @@ const getContent = () => {
                 "Content-Type": "application/json"
             },
             body: JSON.stringify({
-                "texts": [ content ]
+                data: content,
+                website: loc,
+                entry_time: startTime
             })
         }).then(data => data.json()).then(async data => {
-            console.log("Data: ", data);
 
             // Send over to the popup script:
             /**
@@ -35,27 +44,63 @@ const getContent = () => {
     });
 }
 
-document.body.addEventListener("load", () => {
-    setTimeout(() => {
-        getContent();
-    }, 3000);
+window.addEventListener("load", () => {
+    // When we first load the page in, 
+    startTime = (new Date()).getTime();
+    getContent()
+    .then(data => {
+        // We got the data!
+        // TODO fill frontend with it
+    });
 })
 
-window.addEventListener("load", () => {
-    getContent();
+const leftPage = async () => {
+    await fetch(`http://localhost:8000/update_viewing_time`, {
+        method: "PATCH",
+        headers: {
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            website: loc,
+            exit_time: (new Date()).getTime()
+        })
+    })
+}
+
+window.addEventListener("unload", () => {
+    // User just closed out page, update
+    leftPage();
+});
+
+window.addEventListener("visibilitychange", () => {
+    if(document.hidden) {
+        // Page has been hidden!
+        // Send a request letting the server know we left this page
+        leftPage();
+    } else {
+        getContent()
+        .then(data => {
+            // We got the data!
+            // TODO fill frontend with it
+        });
+    }
 })
 
 chrome.runtime.onMessage.addListener(
     function(request, sender, sendResponse) {
         if(request.render) {
-            // Once we get a message that we opened the popup,
-            // send back the analysis we get from the server
-            getContent()
-            .then(data => {
-                sendResponse({
-                    data,
-                    website: window.location.hostname
-                })
+            console.log("Saying we left the page");
+            leftPage()
+            .then(() => {
+                // Once we get a message that we opened the popup,
+                // send back the analysis we get from the server
+                getContent()
+                .then(data => {
+                    sendResponse({
+                        data,
+                        website: loc
+                    })
+                });
             });
         }
         return true;

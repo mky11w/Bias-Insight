@@ -38,7 +38,7 @@ body {
     display: flex;
     flex-direction: row;
     gap: 5px;
-    justify-content: baseline;
+    justify-content: base;
     align-items: center;
     min-width: 20em;
 }
@@ -185,4 +185,12 @@ body {
     0% {
         transform: rotateZ(-360deg);
     }
+}
+
+#switchstats {
+    color: var(--color-1);
+    font-size: 14px;
+    position: relative;
+    margin-left: auto;
+    cursor: pointer;
 }

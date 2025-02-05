@@ -1,6 +1,6 @@
-import os
+import os, copy, re
 from fastapi import FastAPI, HTTPException, Depends
-from sqlalchemy import create_engine, Column, Integer, Float, String, JSON, func
+from sqlalchemy import and_, create_engine, Column, Integer, Float, String, JSON, func, Boolean, not_, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from pydantic import BaseModel
 from typing import List, Dict
@@ -8,16 +8,29 @@ import torch
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
+# Added to get the day we make a query
+from datetime import datetime
+from sqlalchemy.ext.mutable import MutableList
+from sqlalchemy import PickleType
 
+from collections import defaultdict
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+nltk.download('stopwords')
+nltk.download('punkt_tab')
+
+SPECIAL_CHARS = ",!?:;@#$%^&*()\"'+1234567890/=-{}`~<>[]\\_·›”’“"
+# Store only the top 75 BoWs
+MAX_BOW = 75
 
 load_dotenv()
-
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL is not set in environment variables.")
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -50,12 +63,35 @@ emotion_model, emotion_tokenizer = load_model("j-hartmann/emotion-english-distil
 political_model, political_tokenizer = load_model("premsa/political-bias-prediction-allsides-BERT")
 stereo_model, stereo_tokenizer = load_model("wu981526092/Sentence-Level-Stereotype-Detector")
 
-
 emotion_labels = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
 stereo_labels = ["unrelated", "stereotype_gender", "stereotype_race", "stereotype_profession", "stereotype_religion"]
 political_labels = ["left", "center", "right"]
 
+def add_to_json(json, added, labels, time, prev_time):
+    new_json = copy.deepcopy(json)
+    if not json:
+        new_json = {}
+        for label in labels:
+            new_json[label] = added[label]
+    else:
+        for label in labels:
+            new_json[label] = (json[label] * prev_time + added[label] * time) / (time + prev_time)
+    return new_json
 
+def normalize_json(json, labels, time):
+    # todo deep copy?
+    new_json = json
+    for label in labels:
+        new_json[label] = new_json[label] * time
+    return new_json
+
+"""
+A single viewing session of a website.
+Contains analysis information from a single
+viewing session.
+TODO: Right now duplicative sessions override previous ones;
+total viewing time is added up, but analyses are overridden.
+"""
 class AnalysisSession(Base):
     __tablename__ = "analysis_sessions"
     id = Column(Integer, primary_key=True, index=True)
@@ -66,20 +102,100 @@ class AnalysisSession(Base):
     sentiment_score = Column(Float)
     emotions = Column(JSON)
     political_bias = Column(JSON)
-    stereotype_score = Column(JSON)  
+    stereotype_score = Column(JSON)
+
+def word_extraction(sentence):
+    stop_words = set(stopwords.words('english'))
+ 
+    word_tokens = word_tokenize(sentence)
+    # converts the words in word_tokens to lower case and then checks whether 
+    #they are present in stop_words or not
+    filtered_sentence = [w for w in word_tokens if not w.lower() in stop_words]
+    #with no lower case conversion
+    filtered_sentence = []
+    
+    for w in word_tokens:
+        if w.lower() not in stop_words:
+            filtered_sentence.append(w.lower())
+    
+    return filtered_sentence
+
+def tokenize(sentences):
+    words = []
+    for sentence in sentences:
+        w = word_extraction(sentence.translate({ord(x): '' for x in SPECIAL_CHARS}))
+        words.extend(w)
+        words = sorted(list(set(words)))
+    return words
+
+def generate_bow(allsentences):
+    vocab = tokenize(allsentences)
+
+    bag_vector = [0 for _ in range(len(vocab))]
+    for sentence in allsentences:
+        words = word_extraction(sentence)
+        for w in words:
+            for i,word in enumerate(vocab):
+                if word == w:
+                    bag_vector[i] += 1
+    return list(sorted(zip(vocab, bag_vector), key=lambda x: -x[1]))
+
+
+"""
+Aggregated information about what specific words/
+phrases show up most often ALL TIME
+"""
+class AnalysisBoW(Base):
+    __tablename__ = "analysis_bow"
+    id = Column(Integer, primary_key=True, index=True)
+    bow = Column(MutableList.as_mutable(PickleType))
+    def to_string(self):
+        return [ (vocab, bow) for vocab, bow in self.bow ]
+
+"""
+A viewing session for a single day.
+Contains weighted averages of each session from a
+given day (day/month/year)
+"""
+class AnalysisSessionDay(Base):
+    __tablename__ = "analysis_day"
+    id = Column(Integer, primary_key=True, index=True)
+    # website = Column(String, index=True)
+    today = Column(Boolean, default=False, index=True)
+    # dd/mm/yyyy
+    day = Column(String)
+    # total amount of time viewing content
+    viewing_time = Column(Float, default=0.0)
+    # number of websites visited
+    number_websites = Column(Integer, default=0)
+
+    # aggregate measurements of analyses done on each website
+    sentiment_score = Column(Float)
+    emotions = Column(JSON)
+    political_bias = Column(JSON)
+    stereotype_score = Column(JSON)
+    def as_dict(self):
+        return {
+            "day": self.day,
+            # Give back viewing time in seconds
+            "viewing_time": self.viewing_time / 1000,
+            "number_websites": self.number_websites,
+            "sentiment_score": self.sentiment_score / self.viewing_time,
+            "emotions": self.emotions,
+            "political_bias": self.political_bias,
+            "stereotype_score": self.stereotype_score,
+        }
 
 Base.metadata.create_all(bind=engine)
 
-
 class TextInput(BaseModel):
-    texts: List[str]
+    data: str
     website: str
     entry_time: float
 
 class TimeUpdate(BaseModel):
     website: str
     exit_time: float
-
 
 def get_db():
     db = SessionLocal()
@@ -88,6 +204,32 @@ def get_db():
     finally:
         db.close()
 
+def get_timestamp():
+    # see: https://stackoverflow.com/questions/55113548/get-year-month-and-day-from-python-variable
+    now = datetime.now()
+    dmy_format = '%d-%m-%Y (%H)'
+    return now.strftime(dmy_format)
+
+def get_day():
+    # see: https://stackoverflow.com/questions/55113548/get-year-month-and-day-from-python-variable
+    now = datetime.now()
+    dmy_format = '%d-%m-%Y'
+    return now.strftime(dmy_format)
+
+def combine_bow(bag1, bag2):
+    # Create a dictionary to store the maximum significance
+    combined_bag = defaultdict(int)
+    
+    # Take the maximum significance for words in bag1
+    for word, number in bag1:
+        combined_bag[word] += number
+    
+    # Take the maximum significance for words in bag2
+    for word, number in bag2:
+        combined_bag[word] += number
+    
+    # Convert the dictionary back into a list of tuples
+    return list(combined_bag.items())
 
 async def classify_texts(model, tokenizer, texts):
     inputs = tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
@@ -95,34 +237,30 @@ async def classify_texts(model, tokenizer, texts):
         outputs = model(**inputs)
     return torch.nn.functional.softmax(outputs.logits, dim=-1).cpu().numpy().tolist()  # Convert tensors to lists
 
-
 @app.post("/SMBSanalyze")
 async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
-    texts = input_data.texts
-    if not texts or all(not text.strip() for text in texts):
+    print(F"User just entered {input_data.website}.")
+    data = input_data.data
+    if not data:
         raise HTTPException(status_code=400, detail="Input texts cannot be empty.")
 
-
-    sentiment_scores = await classify_texts(sentiment_model, sentiment_tokenizer, texts)
+    sentiment_scores = await classify_texts(sentiment_model, sentiment_tokenizer, [data])
     batch_sentiment_score = round(sum(score[1] - score[0] for score in sentiment_scores) / len(sentiment_scores), 4)
 
-
-    emotion_scores = await classify_texts(emotion_model, emotion_tokenizer, texts)
+    emotion_scores = await classify_texts(emotion_model, emotion_tokenizer, [data])
     batch_emotions = {label: round(sum(em[i] for em in emotion_scores) / len(emotion_scores), 4) for i, label in enumerate(emotion_labels)}
 
-    political_scores = await classify_texts(political_model, political_tokenizer, texts)
+    political_scores = await classify_texts(political_model, political_tokenizer, [data])
     batch_political_bias = {label: round(sum(pol[i] for pol in political_scores) / len(political_scores), 4) for i, label in enumerate(political_labels)}
 
-
-    stereotype_scores = await classify_texts(stereo_model, stereo_tokenizer, texts)
+    stereotype_scores = await classify_texts(stereo_model, stereo_tokenizer, [data])
     batch_stereotypes = {label: round(sum(st[i] for st in stereotype_scores) / len(stereotype_scores), 4) for i, label in enumerate(stereo_labels)}
-
 
     response = {
         "sentiment_score": batch_sentiment_score,
-        "dominating_emotions": batch_emotions,
+        "emotions": batch_emotions,
         "political_bias": batch_political_bias,
-        "stereotype_analysis": batch_stereotypes
+        "stereotype": batch_stereotypes
     }
 
     session = AnalysisSession(
@@ -136,10 +274,38 @@ async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
     db.add(session)
     db.commit()
 
+    splitter = re.compile(r"\.|\n")
+    bow = generate_bow(splitter.split(data))
+    print("Got bow: ", bow)
+    session = db.query(AnalysisBoW).first()
+    # If we have one, add to it. If we don't, add a new entry
+    if session:
+        # Come up with new bow + vocab that's combined
+        session.bow = list(sorted(combine_bow(bow, session.bow), key=lambda x: -x[1]))[:MAX_BOW]
+    else:
+        newBow = AnalysisBoW(
+            bow = bow
+        )
+        db.add(newBow)
+    db.commit()
+
+    # Add to our collected information
+    # collected_bow = db.query
+
     return response
+
+@app.get("/get_bow")
+async def get_bow(db: Session = Depends(get_db)):
+    session = db.query(AnalysisBoW).first()
+
+    if session:
+        return session.to_string()
+    else:
+        raise HTTPException(status_code=404, detail="BoW not found")
 
 @app.patch("/update_viewing_time")
 async def update_viewing_time(time_data: TimeUpdate, db: Session = Depends(get_db)):
+    print(F"User just left {time_data.website}.")
     session = db.query(AnalysisSession).filter(
         AnalysisSession.website == time_data.website
     ).order_by(AnalysisSession.entry_time.desc()).first()  # Get latest session for the website
@@ -151,10 +317,121 @@ async def update_viewing_time(time_data: TimeUpdate, db: Session = Depends(get_d
         raise HTTPException(status_code=400, detail="Exit time must be greater than entry time.")
 
     session.exit_time = time_data.exit_time
-    session.viewing_time = round(session.exit_time - session.entry_time, 4)  # Ensure correct viewing time
+    # If we've previously viewed this site, add to it
+    if session.viewing_time:
+        session.viewing_time += round(session.exit_time - session.entry_time, 4)
+    else:
+        session.viewing_time = round(session.exit_time - session.entry_time, 4)  # Ensure correct viewing time
+    
+    # Upon leaving a website,
+    # update our current day's aggregate statistics
+    # (1) Find if this day exists within the database already
+    dmy = get_timestamp()
+
+    def add_aggregate_point(dmy, today = False):
+        current_day = db.query(AnalysisSessionDay).filter(
+            or_(and_(AnalysisSessionDay.day == dmy, not_(AnalysisSessionDay.today)),
+                and_(today, AnalysisSessionDay.today == True))
+        ).first()
+
+        # If today set and the day is not the same,
+        # remove current_day and restart
+        if (today and current_day and current_day.day != dmy):
+            print("Day changed, removing element")
+            current_day.remove()
+            current_day = None
+
+        # If day doesn't exist, add it to database
+        if not current_day:
+            print(F"Day {dmy} does not yet exist {current_day and current_day.day != dmy}, adding to database.")
+            if today:
+                print("(In today mode)")
+            # Add our website's info + the day
+            session_day = AnalysisSessionDay(
+                day = dmy,
+                today = today,
+                # amt of timed viewed is just this website,
+                # since we haven't gone anywhere else
+                viewing_time = session.viewing_time,
+                # number of websites visited--just this one
+                number_websites = 1,
+
+                # aggregate measurements of analyses done on each website
+                sentiment_score = session.sentiment_score * session.viewing_time,
+                emotions = add_to_json(
+                    None, session.emotions, emotion_labels, session.viewing_time, 0
+                ),
+                political_bias = add_to_json(
+                    None, session.political_bias, political_labels, session.viewing_time, 0
+                ),
+                stereotype_score = add_to_json(
+                    None, session.stereotype_score, stereo_labels, session.viewing_time, 0
+                )
+            )
+            # Add session to database
+            db.add(session_day)
+        else:
+            print(F"Updating current day: {dmy}, {today}")
+            # Update the existing day
+            current_day.today = today
+            current_day.number_websites += 1
+            current_day.sentiment_score += session.sentiment_score * session.viewing_time
+            # Add to the JSON-elements:
+            current_day.emotions = add_to_json(
+                current_day.emotions, session.emotions, emotion_labels, session.viewing_time, current_day.viewing_time
+            )
+            if today:
+                print("BEFORE: ", current_day.political_bias, session.political_bias, "AFTER", add_to_json(
+                    current_day.political_bias, session.political_bias, political_labels, session.viewing_time, current_day.viewing_time
+                ))
+            current_day.political_bias = add_to_json(
+                current_day.political_bias, session.political_bias, political_labels, session.viewing_time, current_day.viewing_time
+            )
+            current_day.stereotype_score = add_to_json(
+                current_day.stereotype_score, session.stereotype_score, stereo_labels, session.viewing_time, current_day.viewing_time
+            )
+            current_day.viewing_time += session.viewing_time
+
+    # Add to a "today" aggregator--use for today's status
+    add_aggregate_point(get_day(), True)
+    add_aggregate_point(dmy)
     db.commit()
 
     return {"message": "Viewing time updated successfully"}
+
+@app.get("/today")
+async def get_day_stats(db: Session = Depends(get_db)):
+    # Query database for the current day
+    current_day = db.query(AnalysisSessionDay).filter(
+        AnalysisSessionDay.today == True
+    ).first()
+    if current_day:
+        print(F"Giving back day with: {current_day.day}")
+        # Give back the information we have about this day
+        return current_day.as_dict()
+    else:
+        # We don't have any info :(
+        # Don't make this a 404 because
+        # it's normal to query times that have no info for them
+        return { "detail": "No info available for this day", "no_info": True }
+
+# Given a day we are querying,
+# give back the information we have for that specific day (nothing if we have no measurements).
+@app.get("/day_stats")
+async def get_day_stats(day, db: Session = Depends(get_db)):
+    # Query database for this day
+    print(F"User queried day: {day}")
+    current_day = db.query(AnalysisSessionDay).filter(
+        AnalysisSessionDay.day == day
+    ).first()
+    if current_day:
+        # Give back the information we have about this day
+        return current_day.as_dict()
+    else:
+        # We don't have any info :(
+        # Don't make this a 404 because
+        # it's normal to query times that have no info for them
+        return { "detail": "No info available for this day", "no_info": True }
 
 @app.get("/website_stats")
 async def get_website_stats(db: Session = Depends(get_db)):
