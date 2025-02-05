@@ -17,8 +17,10 @@ from collections import defaultdict
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-nltk.download('stopwords')
-nltk.download('punkt_tab')
+#import ssl
+#ssl._create_default_https_context = ssl._create_unverified_context
+#nltk.download('stopwords')
+#nltk.download('punkt_tab')
 
 SPECIAL_CHARS = ",!?:;@#$%^&*()\"'+1234567890/=-{}`~<>[]\\_·›”’“"
 # Store only the top 75 BoWs

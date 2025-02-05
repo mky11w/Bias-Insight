@@ -13,7 +13,7 @@ const getContent = () => {
         }).join("\n");
 
         // Update timestamp right before we request an analysis
-        startTime = (new Date()).getTime();
+        startTime = (new Date()).getTime()/1000;
         // Once we get content, send it off to Makayla's app
         fetch("http://localhost:8000/SMBSanalyze", {
             method: "POST",
@@ -46,7 +46,7 @@ const getContent = () => {
 
 window.addEventListener("load", () => {
     // When we first load the page in, 
-    startTime = (new Date()).getTime();
+    startTime = (new Date()).getTime()/1000;
     getContent()
     .then(data => {
         // We got the data!
@@ -62,7 +62,7 @@ const leftPage = async () => {
         },
         body: JSON.stringify({
             website: loc,
-            exit_time: (new Date()).getTime()
+            exit_time: (new Date()).getTime()/1000
         })
     })
 }
