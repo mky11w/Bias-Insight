@@ -20,12 +20,12 @@ from collections import defaultdict
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
-#import ssl
-#ssl._create_default_https_context = ssl._create_unverified_context
-#nltk.download('stopwords')
-#nltk.download('punkt_tab')
+nltk.download('stopwords')
+nltk.download('punkt_tab')
 from label_message import label_messages
 
+#import ssl
+#ssl._create_default_https_context = ssl._create_unverified_context
 
 
 SPECIAL_CHARS = ",!?:;@#$%^&*()\"'+1234567890/=-{}`~<>[]\\_·›”’“"
@@ -624,19 +624,39 @@ async def get_overall_accumulated_results(website: str = None, db: Session = Dep
     }
 
 @app.get("/most_frequent_label")
-def get_most_frequent_label(db: Session = Depends(get_db)):
-    result = (
-        db.query(WebsiteClassification.label, func.count(WebsiteClassification.id).label("count"))
+def get_labels_info(db: Session = Depends(get_db)):
+    all_label_counts = (
+        db.query(
+            WebsiteClassification.label,
+            func.count(WebsiteClassification.id).label("count")
+        )
         .group_by(WebsiteClassification.label)
         .order_by(func.count(WebsiteClassification.id).desc())
-        .first()
-    )   
-    if result:
-        message = label_messages.get(result.label, "")
-        return {"most_frequent_label": result.label, "count": result.count, "message": message}
-    
-    else:
-        raise HTTPException(status_code=404, detail="No classification records found.")
+        .all()
+    )
+
+    if not all_label_counts:
+         raise HTTPException(status_code=404, detail="No classification records found.")
+
+    total = db.query(func.count(WebsiteClassification.id)).scalar()
+
+    top = all_label_counts[0]
+    top_label_result = {
+        "label": top.label,
+        "count": top.count,
+        "percentage": (top.count / total * 100) if total > 0 else 0,
+        "message": label_messages.get(top.label, "")
+    }
+
+    all_percentages = []
+    for item in all_label_counts:
+         all_percentages.append({
+             "label": item.label,
+             "count": item.count,
+             "percentage": (item.count / total * 100) if total > 0 else 0,
+         })
+
+    return {"top_labels": [top_label_result], "all_percentages": all_percentages}
 
 if __name__ == "__main__":
     import uvicorn
