@@ -347,23 +347,6 @@ async def classify_websites(model, tokenizer, website, text):
         print(f"Error in classify_websites: {str(e)}")
         raise e
 
-@app.post("/webclass")
-async def class_webs(input_data: TextInput, db: Session = Depends(get_db)):
-    
-    if not input_data.website or not input_data.data:
-        raise HTTPException(status_code=400, detail="Both website and text data are required.")
-          
-    web_classification_index = await classify_websites(web_class_model, web_class_tokenizer, input_data.website,input_data.data)
-    
-    record = WebsiteClassification(
-        label=web_class_labels[web_classification_index]
-    )
-    db.add(record)
-    db.commit()
-
-    return {
-        "website_classification": web_class_labels[web_classification_index]
-    }
 
 
 @app.post("/SMBSanalyze")
@@ -372,6 +355,14 @@ async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
     data = input_data.data
     if not data:
         raise HTTPException(status_code=400, detail="Input texts cannot be empty.")
+    
+    web_classification_index = await classify_websites(
+        web_class_model, web_class_tokenizer, input_data.website, input_data.data
+    )
+    website_record = WebsiteClassification(
+        label=web_class_labels[web_classification_index]
+    )
+    db.add(website_record)
     
     sentiment_scores = await classify_texts(get_sentiment_model(), [data])
     batch_sentiment_score = round(sum(score[1] - score[0] for score in sentiment_scores) / len(sentiment_scores), 4)
@@ -417,11 +408,15 @@ async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
         )
         db.add(newBow)
     db.commit()
-
     # Add to our collected information
     # collected_bow = db.query
-
-    return response
+    return {
+        "website_classification": web_class_labels[web_classification_index],
+        "sentiment_score": batch_sentiment_score,
+        "emotions": batch_emotions,
+        "political_bias": batch_political_bias,
+        "stereotype": batch_stereotypes
+    }
 
 @app.get("/get_bow")
 async def get_bow(db: Session = Depends(get_db)):
@@ -644,7 +639,7 @@ def get_labels_info(db: Session = Depends(get_db)):
     top_label_result = {
         "label": top.label,
         "count": top.count,
-        "percentage": (top.count / total * 100) if total > 0 else 0,
+        "percentage": round(top.count / total * 100,2) if total > 0 else 0,
         "message": label_messages.get(top.label, "")
     }
 
@@ -653,7 +648,7 @@ def get_labels_info(db: Session = Depends(get_db)):
          all_percentages.append({
              "label": item.label,
              "count": item.count,
-             "percentage": (item.count / total * 100) if total > 0 else 0,
+             "percentage": round(item.count / total * 100,2) if total > 0 else 0,
          })
 
     return {"top_labels": [top_label_result], "all_percentages": all_percentages}
