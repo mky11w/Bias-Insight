@@ -1,11 +1,14 @@
 import os, copy, re
 from fastapi import FastAPI, HTTPException, Depends
+
+app = FastAPI()
+
 from sqlalchemy import and_, create_engine, Column, Integer, Float, String, JSON, func, Boolean, not_, or_
 from sqlalchemy.orm import declarative_base, sessionmaker, Session
 from pydantic import BaseModel
-from typing import List, Dict
+from typing import List, Dict, Tuple
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedModel, PreTrainedTokenizer
 from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 # Added to get the day we make a query
@@ -17,10 +20,13 @@ from collections import defaultdict
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
+nltk.download('stopwords')
+nltk.download('punkt_tab')
+from label_message import label_messages
+
 #import ssl
 #ssl._create_default_https_context = ssl._create_unverified_context
-#nltk.download('stopwords')
-#nltk.download('punkt_tab')
+
 
 SPECIAL_CHARS = ",!?:;@#$%^&*()\"'+1234567890/=-{}`~<>[]\\_·›”’“"
 # Store only the top 75 BoWs
@@ -37,7 +43,7 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
-app = FastAPI()
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,31 +53,25 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+device = "cpu"
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+###
+# Global references (initialized to None, so we know they aren't loaded)
+###
+web_class_model = None
+web_class_tokenizer = None
 
+sentiment_model = None
+sentiment_tokenizer = None
 
-def load_model(model_name):
-    try:
-        model = AutoModelForSequenceClassification.from_pretrained(model_name).to(device)
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
-        return model, tokenizer
-    except Exception as e:
-        raise RuntimeError(f"Failed to load model {model_name}: {str(e)}")
+emotion_model = None
+emotion_tokenizer = None
 
+political_model = None
+political_tokenizer = None
 
-## loads models and labels
-web_class_model = AutoModelForSequenceClassification.from_pretrained(
-    "WebOrganizer/TopicClassifier",
-    trust_remote_code=True,
-    use_memory_efficient_attention=False)
-web_class_tokenizer = AutoTokenizer.from_pretrained("WebOrganizer/TopicClassifier", trust_remote_code=True)
-sentiment_model, sentiment_tokenizer = load_model("distilbert/distilbert-base-uncased-finetuned-sst-2-english")
-emotion_model, emotion_tokenizer = load_model("j-hartmann/emotion-english-distilroberta-base")
-political_model, political_tokenizer = load_model("premsa/political-bias-prediction-allsides-BERT")
-stereo_model, stereo_tokenizer = load_model("wu981526092/Sentence-Level-Stereotype-Detector")
-
-
+stereo_model = None
+stereo_tokenizer = None
 
 emotion_labels = ["anger", "disgust", "fear", "joy", "neutral", "sadness", "surprise"]
 stereo_labels = ["unrelated", "stereotype_gender", "stereotype_race", "stereotype_profession", "stereotype_religion"]
@@ -83,6 +83,74 @@ web_class_labels = [
     "Literature", "Politics", "Religion", "Science & Tech.", "Software",
     "Sports & Fitness", "Transportation", "Travel"
 ]
+
+###
+# Lazy Loading
+# Only load the model/tokenizer once, then reuse.
+###
+
+def get_web_class_model():
+    global web_class_model, web_class_tokenizer
+    if web_class_model is None:
+        web_class_model = AutoModelForSequenceClassification.from_pretrained(
+            "WebOrganizer/TopicClassifier",
+            trust_remote_code=True,
+            use_memory_efficient_attention=False
+        ).to(device)
+        web_class_tokenizer = AutoTokenizer.from_pretrained(
+            "WebOrganizer/TopicClassifier",
+            trust_remote_code=True
+        )
+    return web_class_model, web_class_tokenizer
+
+
+def get_sentiment_model():
+    global sentiment_model, sentiment_tokenizer
+    if sentiment_model is None:
+        sentiment_model = AutoModelForSequenceClassification.from_pretrained(
+            "distilbert/distilbert-base-uncased-finetuned-sst-2-english"
+        ).to(device)
+        sentiment_tokenizer = AutoTokenizer.from_pretrained(
+            "distilbert/distilbert-base-uncased-finetuned-sst-2-english"
+        )
+    return sentiment_model, sentiment_tokenizer
+
+
+def get_emotion_model():
+    global emotion_model, emotion_tokenizer
+    if emotion_model is None:
+        emotion_model = AutoModelForSequenceClassification.from_pretrained(
+            "j-hartmann/emotion-english-distilroberta-base"
+        ).to(device)
+        emotion_tokenizer = AutoTokenizer.from_pretrained(
+            "j-hartmann/emotion-english-distilroberta-base"
+        )
+    return emotion_model, emotion_tokenizer
+
+
+def get_political_model():
+    global political_model, political_tokenizer
+    if political_model is None:
+        political_model = AutoModelForSequenceClassification.from_pretrained(
+            "premsa/political-bias-prediction-allsides-BERT"
+        ).to(device)
+        political_tokenizer = AutoTokenizer.from_pretrained(
+            "premsa/political-bias-prediction-allsides-BERT"
+        )
+    return political_model, political_tokenizer
+
+
+def get_stereo_model():
+    global stereo_model, stereo_tokenizer
+    if stereo_model is None:
+        stereo_model = AutoModelForSequenceClassification.from_pretrained(
+            "wu981526092/Sentence-Level-Stereotype-Detector"
+        ).to(device)
+        stereo_tokenizer = AutoTokenizer.from_pretrained(
+            "wu981526092/Sentence-Level-Stereotype-Detector"
+        )
+    return stereo_model, stereo_tokenizer
+
 
 def add_to_json(json, added, labels, time, prev_time):
     new_json = copy.deepcopy(json)
@@ -254,7 +322,8 @@ def combine_bow(bag1, bag2):
     # Convert the dictionary back into a list of tuples
     return list(combined_bag.items())
 
-async def classify_texts(model, tokenizer, texts):
+async def classify_texts(model_and_tokenizer: Tuple[PreTrainedModel, PreTrainedTokenizer], texts):
+    model, tokenizer = model_and_tokenizer
     inputs = tokenizer(texts, padding=True, truncation=True, max_length=512, return_tensors="pt").to(device)
     with torch.no_grad():
         outputs = model(**inputs)
@@ -262,6 +331,7 @@ async def classify_texts(model, tokenizer, texts):
 
 async def classify_websites(model, tokenizer, website, text):
     try:
+        model, tokenizer = get_web_class_model()
         combined_input = f"{website} {text}"
         inputs = tokenizer(combined_input, return_tensors="pt", truncation=True, padding=True).to(device)
         
@@ -277,23 +347,6 @@ async def classify_websites(model, tokenizer, website, text):
         print(f"Error in classify_websites: {str(e)}")
         raise e
 
-@app.post("/webclass")
-async def class_webs(input_data: TextInput, db: Session = Depends(get_db)):
-    
-    if not input_data.website or not input_data.data:
-        raise HTTPException(status_code=400, detail="Both website and text data are required.")
-          
-    web_classification_index = await classify_websites(web_class_model, web_class_tokenizer, input_data.website,input_data.data)
-    
-    record = WebsiteClassification(
-        label=web_class_labels[web_classification_index]
-    )
-    db.add(record)
-    db.commit()
-
-    return {
-        "website_classification": web_class_labels[web_classification_index]
-    }
 
 
 @app.post("/SMBSanalyze")
@@ -302,17 +355,25 @@ async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
     data = input_data.data
     if not data:
         raise HTTPException(status_code=400, detail="Input texts cannot be empty.")
-
-    sentiment_scores = await classify_texts(sentiment_model, sentiment_tokenizer, [data])
+    
+    web_classification_index = await classify_websites(
+        web_class_model, web_class_tokenizer, input_data.website, input_data.data
+    )
+    website_record = WebsiteClassification(
+        label=web_class_labels[web_classification_index]
+    )
+    db.add(website_record)
+    
+    sentiment_scores = await classify_texts(get_sentiment_model(), [data])
     batch_sentiment_score = round(sum(score[1] - score[0] for score in sentiment_scores) / len(sentiment_scores), 4)
 
-    emotion_scores = await classify_texts(emotion_model, emotion_tokenizer, [data])
+    emotion_scores = await classify_texts(get_emotion_model(), [data])
     batch_emotions = {label: round(sum(em[i] for em in emotion_scores) / len(emotion_scores), 4) for i, label in enumerate(emotion_labels)}
 
-    political_scores = await classify_texts(political_model, political_tokenizer, [data])
+    political_scores = await classify_texts(get_political_model(), [data])
     batch_political_bias = {label: round(sum(pol[i] for pol in political_scores) / len(political_scores), 4) for i, label in enumerate(political_labels)}
 
-    stereotype_scores = await classify_texts(stereo_model, stereo_tokenizer, [data])
+    stereotype_scores = await classify_texts(get_stereo_model(), [data])
     batch_stereotypes = {label: round(sum(st[i] for st in stereotype_scores) / len(stereotype_scores), 4) for i, label in enumerate(stereo_labels)}
 
     response = {
@@ -347,11 +408,15 @@ async def analyze_texts(input_data: TextInput, db: Session = Depends(get_db)):
         )
         db.add(newBow)
     db.commit()
-
     # Add to our collected information
     # collected_bow = db.query
-
-    return response
+    return {
+        "website_classification": web_class_labels[web_classification_index],
+        "sentiment_score": batch_sentiment_score,
+        "emotions": batch_emotions,
+        "political_bias": batch_political_bias,
+        "stereotype": batch_stereotypes
+    }
 
 @app.get("/get_bow")
 async def get_bow(db: Session = Depends(get_db)):
@@ -554,46 +619,40 @@ async def get_overall_accumulated_results(website: str = None, db: Session = Dep
     }
 
 @app.get("/most_frequent_label")
-def get_most_frequent_label(db: Session = Depends(get_db)):
-    result = (
-        db.query(WebsiteClassification.label, func.count(WebsiteClassification.id).label("count"))
+def get_labels_info(db: Session = Depends(get_db)):
+    all_label_counts = (
+        db.query(
+            WebsiteClassification.label,
+            func.count(WebsiteClassification.id).label("count")
+        )
         .group_by(WebsiteClassification.label)
         .order_by(func.count(WebsiteClassification.id).desc())
-        .first()
-    )   
-    if result:
-        label_messages = {
-            "Adult": "Ah, exploring life's spicy corners, aren't we?",
-            "Art & Design": "You're painting reality one brilliant idea at a time!",
-            "Software Dev.": "Clearly, you speak fluent Python and dream in JavaScript.",
-            "Crime & Law": "Sherlock would be proud of your detective instincts!",
-            "Education & Jobs": "Always chasing knowledge—professors envy your enthusiasm.",
-            "Hardware": "Your idea of fun involves wires, chips, and just a hint of solder smoke.",
-            "Entertainment": "Hollywood could use someone with your impeccable taste.",
-            "Social Life": "Your notifications must rival Times Square at night!",
-            "Fashion & Beauty": "Even your pajamas could walk a runway.",
-            "Finance & Business": "Wall Street should watch out for your savvy moves!",
-            "Food & Dining": "Clearly, you believe life is too short for bland meals.",
-            "Games": "Leveling up is basically your cardio.",
-            "Health": "Avocados and yoga mats fear your unwavering dedication.",
-            "History": "You've probably corrected a historian once or twice.",
-            "Home & Hobbies": "You're turning DIY into an Olympic sport.",
-            "Industrial": "Factories run smoother when you're in charge!",
-            "Literature": "Shakespeare has nothing on your plot twists.",
-            "Politics": "You're the master of diplomatic tweets and heated debates.",
-            "Religion": "Your search for meaning deserves its own philosophy textbook.",
-            "Science & Tech.": "You probably whisper \"Eureka!\" in your sleep.",
-            "Software": "Debugging code is your favorite adrenaline sport.",
-            "Sports & Fitness": "Even your sweat has a competitive streak.",
-            "Transportation": "Your mind travels faster than a Tesla on autopilot.",
-            "Travel": "Your passport stamps could fill a novel!"
-        }
-        message = label_messages.get(result.label, "")
-        return {"most_frequent_label": result.label, "count": result.count, "message": message}
-    
-    else:
-        raise HTTPException(status_code=404, detail="No classification records found.")
+        .all()
+    )
+
+    if not all_label_counts:
+         raise HTTPException(status_code=404, detail="No classification records found.")
+
+    total = db.query(func.count(WebsiteClassification.id)).scalar()
+
+    top = all_label_counts[0]
+    top_label_result = {
+        "label": top.label,
+        "count": top.count,
+        "percentage": round(top.count / total * 100,2) if total > 0 else 0,
+        "message": label_messages.get(top.label, "")
+    }
+
+    all_percentages = []
+    for item in all_label_counts:
+         all_percentages.append({
+             "label": item.label,
+             "count": item.count,
+             "percentage": round(item.count / total * 100,2) if total > 0 else 0,
+         })
+
+    return {"top_labels": [top_label_result], "all_percentages": all_percentages}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
